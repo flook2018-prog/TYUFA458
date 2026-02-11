@@ -1,83 +1,81 @@
 import requests
 import re
-import time
 from bs4 import BeautifulSoup
-from database import init_db, get_channel, update_channel
-from telegram_alert import send_alert
+from telegram.ext import Updater, CommandHandler
 
-CHECK_INTERVAL = 300  # 5 นาที
+TOKEN = "8538417344:AAELrbI2KX9JmhHi_EhgCxLXPfPqyl8E29Q"
 
-def fetch_channel(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
+CHANNELS = [
+    "https://www.youtube.com/@JOJOCARTOON-p7p",
+    "https://www.youtube.com/@Rasingcartoon",
+    "https://www.youtube.com/@RonaldoNo1-j6j",
+    "https://www.youtube.com/@Iconiccartoon-y5i",
+    "https://www.youtube.com/@ilukpaaaa",
+    "https://www.youtube.com/@Fibzyจะโบนบิน",
+    "https://www.youtube.com/@XcghFs",
+    "https://www.youtube.com/@Rolando7k-z9d",
+    "https://www.youtube.com/@ttsundayxremix468",
+    "https://www.youtube.com/@คนตื่นบา1",
+    "https://www.youtube.com/@LyricsxThailand7"
+]
+
+def fetch_latest_video(channel_url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    r = requests.get(channel_url + "/videos", headers=headers)
+
+    if r.status_code == 404 or "terminated" in r.text.lower():
+        return {"status": "TERMINATED"}
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # ดึง video id ตัวแรกที่ไม่ใช่ shorts
+    match = re.search(r'"videoId":"(.*?)"', r.text)
+    if not match:
+        return {"status": "ACTIVE", "video": "ไม่พบวิดีโอ"}
+
+    video_id = match.group(1)
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    vr = requests.get(video_url, headers=headers)
+    video_html = vr.text
+
+    view_match = re.search(r'"viewCount":"(.*?)"', video_html)
+    like_match = re.search(r'"label":"([\d,]+) likes"', video_html)
+    comment_match = re.search(r'"countText":\{"simpleText":"([\d,]+) Comments"', video_html)
+
+    return {
+        "status": "ACTIVE",
+        "views": view_match.group(1) if view_match else "N/A",
+        "likes": like_match.group(1) if like_match else "N/A",
+        "comments": comment_match.group(1) if comment_match else "N/A",
     }
 
-    try:
-        r = requests.get(url + "/videos", headers=headers, timeout=15)
+def check(update, context):
+    for url in CHANNELS:
+        data = fetch_latest_video(url)
 
-        if r.status_code == 404:
-            return {"status": "TERMINATED"}
-
-        if "This account has been terminated" in r.text:
-            return {"status": "TERMINATED"}
-
-        text = r.text
-
-        sub_match = re.search(r'"subscriberCountText".*?"simpleText":"(.*?)"', text)
-        subscribers = sub_match.group(1) if sub_match else "N/A"
-
-        view_match = re.search(r'"viewCountText".*?"simpleText":"(.*?)"', text)
-        views = view_match.group(1) if view_match else "N/A"
-
-        video_match = re.search(r'"videosCountText".*?"simpleText":"(.*?)"', text)
-        videos = video_match.group(1) if video_match else "N/A"
-
-        return {
-            "status": "ACTIVE",
-            "subscribers": subscribers,
-            "views": views,
-            "videos": videos
-        }
-
-    except:
-        return {"status": "ERROR"}
-
-def monitor():
-    init_db()
-
-    with open("channels.txt") as f:
-        channels = [line.strip() for line in f.readlines()]
-
-    while True:
-        for url in channels:
-            new_data = fetch_channel(url)
-            old_data = get_channel(url)
-
-            if not old_data:
-                update_channel(
-                    url,
-                    new_data.get("status"),
-                    new_data.get("subscribers"),
-                    new_data.get("views"),
-                    new_data.get("videos"),
-                )
-                continue
-
-            old_status = old_data[1]
-            new_status = new_data.get("status")
-
-            if old_status != new_status:
-                send_alert(f"🚨 STATUS CHANGED\n{url}\n{old_status} ➜ {new_status}")
-
-            update_channel(
-                url,
-                new_status,
-                new_data.get("subscribers"),
-                new_data.get("views"),
-                new_data.get("videos"),
+        if data["status"] == "TERMINATED":
+            msg = f"❌ {url}\nSTATUS: TERMINATED\n"
+        else:
+            msg = (
+                f"✅ {url}\n"
+                f"STATUS: ACTIVE\n"
+                f"Views: {data['views']}\n"
+                f"Likes: {data['likes']}\n"
+                f"Comments: {data['comments']}\n"
             )
 
-        time.sleep(CHECK_INTERVAL)
+        update.message.reply_text(msg)
+
+def main():
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("check", check))
+
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
-    monitor()
+    main()
