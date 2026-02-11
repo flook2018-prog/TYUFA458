@@ -1,117 +1,150 @@
 import os
-import requests
-from datetime import datetime
+import isodate
+from urllib.parse import urlparse
+import re
+from googleapiclient.discovery import build
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# =========================
+# CONFIG
+# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
-CHANNELS = {
-    "JOJOCARTOON": "JOJOCARTOON-p7p",
-    "Rasingcartoon": "Rasingcartoon",
-    "RonaldoNo1": "RonaldoNo1-j6j",
-    "Iconiccartoon": "Iconiccartoon-y5i",
-    "ilukpaaaa": "ilukpaaaa",
-    "Fibzy": "Fibzyจะโบนบิน",
-    "XcghFs": "XcghFs",
-    "Rolando7k": "Rolando7k-z9d",
-    "ttsundayxremix": "ttsundayxremix468",
-    "คนตื่นบ้า": "คนตื่นบ้า1",
-    "LyricsxThailand": "LyricsxThailand7"
-}
+CHANNELS = [
+    "https://www.youtube.com/@JOJOCARTOON-p7p",
+    "https://www.youtube.com/@Rasingcartoon",
+    "https://www.youtube.com/@RonaldoNo1-j6j",
+    "https://www.youtube.com/@Iconiccartoon-y5i",
+    "https://www.youtube.com/@ilukpaaaa",
+    "https://www.youtube.com/@Fibzyจะโบนบิน",
+    "https://www.youtube.com/@XcghFs",
+    "https://www.youtube.com/@Rolando7k-z9d",
+    "https://www.youtube.com/@ttsundayxremix468",
+    "https://www.youtube.com/@คนตื่นบวช1",
+    "https://www.youtube.com/@LyricsxThailand7"
+]
+
+youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+# =========================
+# YOUTUBE SERVICE
+# =========================
+
+def get_channel_id_from_url(url: str):
+    parsed = urlparse(url)
+
+    if "/channel/" in parsed.path:
+        return parsed.path.split("/channel/")[1]
+
+    handle_match = re.search(r"@([^/]+)", parsed.path)
+    if handle_match:
+        handle = handle_match.group(1)
+        res = youtube.search().list(
+            part="snippet",
+            q=handle,
+            type="channel",
+            maxResults=1
+        ).execute()
+        if res["items"]:
+            return res["items"][0]["id"]["channelId"]
+
+    return None
+
+
+def get_uploads_playlist(channel_id):
+    res = youtube.channels().list(
+        part="contentDetails",
+        id=channel_id
+    ).execute()
+
+    return res["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+
+def get_latest_videos(url, limit=2):
+    channel_id = get_channel_id_from_url(url)
+    if not channel_id:
+        return None
+
+    uploads_id = get_uploads_playlist(channel_id)
+
+    playlist_items = youtube.playlistItems().list(
+        part="snippet,contentDetails",
+        playlistId=uploads_id,
+        maxResults=10
+    ).execute()
+
+    video_ids = [
+        item["contentDetails"]["videoId"]
+        for item in playlist_items["items"]
+    ]
+
+    videos = youtube.videos().list(
+        part="contentDetails,statistics,snippet",
+        id=",".join(video_ids)
+    ).execute()
+
+    results = []
+
+    for video in videos["items"]:
+        duration = isodate.parse_duration(
+            video["contentDetails"]["duration"]
+        ).total_seconds()
+
+        if duration >= 60:
+            results.append({
+                "title": video["snippet"]["title"],
+                "published": video["snippet"]["publishedAt"],
+                "views": video["statistics"].get("viewCount", 0),
+                "likes": video["statistics"].get("likeCount", 0),
+                "comments": video["statistics"].get("commentCount", 0)
+            })
+
+        if len(results) >= limit:
+            break
+
+    return results
 
 
 # =========================
-# 🔍 Helper Functions
+# TELEGRAM COMMAND
 # =========================
 
-def get_channel_id_from_handle(handle):
-    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={handle}&key={YOUTUBE_API_KEY}"
-    r = requests.get(url).json()
-    return r["items"][0]["snippet"]["channelId"]
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("กำลังดึงข้อมูล...")
 
+    for url in CHANNELS:
+        videos = get_latest_videos(url)
 
-def get_channel_info(channel_id):
-    url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&id={channel_id}&key={YOUTUBE_API_KEY}"
-    r = requests.get(url).json()
-    return r["items"][0]
+        if not videos:
+            await update.message.reply_text(f"❌ ไม่พบข้อมูล {url}")
+            continue
 
+        text = f"📺 {url}\n\n"
 
-def get_latest_videos(playlist_id):
-    url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=2&playlistId={playlist_id}&key={YOUTUBE_API_KEY}"
-    r = requests.get(url).json()
-    return r["items"]
+        for v in videos:
+            text += (
+                f"📌 {v['title']}\n"
+                f"⏰ {v['published']}\n"
+                f"👁 {v['views']} | 👍 {v['likes']} | 💬 {v['comments']}\n"
+                f"{'-'*30}\n"
+            )
 
-
-def get_video_stats(video_ids):
-    ids = ",".join(video_ids)
-    url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics&id={ids}&key={YOUTUBE_API_KEY}"
-    r = requests.get(url).json()
-    return {item["id"]: item["statistics"] for item in r["items"]}
+        await update.message.reply_text(text)
 
 
 # =========================
-# 📩 Telegram Command
-# =========================
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = "📊 YouTube Channel Report\n"
-
-    for name, handle in CHANNELS.items():
-        try:
-            channel_id = get_channel_id_from_handle(handle)
-            channel_data = get_channel_info(channel_id)
-
-            title = channel_data["snippet"]["title"]
-            subs = channel_data["statistics"].get("subscriberCount", "0")
-            total_videos = channel_data["statistics"].get("videoCount", "0")
-
-            uploads_playlist = channel_data["contentDetails"]["relatedPlaylists"]["uploads"]
-            latest_videos = get_latest_videos(uploads_playlist)
-
-            video_ids = [v["snippet"]["resourceId"]["videoId"] for v in latest_videos]
-            stats_map = get_video_stats(video_ids)
-
-            message += f"\n\n📺 {title}"
-            message += f"\n👥 Subscribers: {subs}"
-            message += f"\n🎬 Total Videos: {total_videos}\n"
-
-            for v in latest_videos:
-                vid = v["snippet"]["resourceId"]["videoId"]
-                video_title = v["snippet"]["title"]
-                published = v["snippet"]["publishedAt"]
-                stats = stats_map.get(vid, {})
-
-                message += (
-                    f"\n🎥 {video_title}"
-                    f"\n🕒 {published}"
-                    f"\n👁 {stats.get('viewCount', '0')}"
-                    f"\n👍 {stats.get('likeCount', '0')}"
-                    f"\n💬 {stats.get('commentCount', '0')}\n"
-                )
-
-        except Exception as e:
-            message += f"\n❌ {name} error: {str(e)}\n"
-
-    await update.message.reply_text(message[:4000])
-
-
-# =========================
-# 🚀 Main
+# MAIN
 # =========================
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & filters.Regex("(?i)^status$"),
-            status_command
-        )
-    )
+    app.add_handler(CommandHandler("report", report))
 
-    app.run_polling(drop_pending_updates=True)
+    print("Bot is running...")
+    app.run_polling()
 
 
 if __name__ == "__main__":
