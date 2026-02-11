@@ -1,10 +1,13 @@
 import requests
 import re
+from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
+# ====== ใส่ค่าของคุณ ======
 TOKEN = "8538417344:AAELrbI2KX9JmhHi_EhgCxLXPfPqyl8E29Q"
 CHAT_ID = -1003882788938
+# ===========================
 
 CHANNEL_URLS = [
     "https://www.youtube.com/@JOJOCARTOON-p7p",
@@ -22,62 +25,95 @@ CHANNEL_URLS = [
 
 channel_status = {}
 
-# -----------------------------------
+# -----------------------------
 # ดึงชื่อช่องจากหน้าเว็บ
-# -----------------------------------
-def check_channel(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
+# -----------------------------
+def get_channel_name(url):
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
         res = requests.get(url, headers=headers, timeout=10)
 
         if res.status_code != 200:
             return None
 
-        # ดึง title จาก HTML
-        match = re.search(r"<title>(.*?)</title>", res.text)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        if match:
-            title = match.group(1)
-            title = title.replace(" - YouTube", "").strip()
-            return title
+        meta = soup.find("meta", property="og:title")
+        if meta:
+            return meta["content"]
 
-        return "Unknown"
+        return None
 
     except:
         return None
 
-# -----------------------------------
-# คำสั่ง status
-# -----------------------------------
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+# -----------------------------
+# เช็คทุกช่อง
+# -----------------------------
+async def check_channels(context: ContextTypes.DEFAULT_TYPE):
+    global channel_status
+
+    for url in CHANNEL_URLS:
+        name = get_channel_name(url)
+        status = "alive" if name else "dead"
+
+        if url not in channel_status:
+            channel_status[url] = status
+            continue
+
+        if status != channel_status[url]:
+            if status == "alive":
+                message = f"✅ {name} กลับมาแล้ว"
+            else:
+                message = f"🚨 {url} เข้าไม่ได้แล้ว"
+
+            await context.bot.send_message(chat_id=CHAT_ID, text=message)
+            channel_status[url] = status
+
+
+# -----------------------------
+# คำสั่ง status
+# -----------------------------
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != CHAT_ID:
         return
 
     report = "📊 รายงานสถานะช่อง\n\n"
 
     for url in CHANNEL_URLS:
-        name = check_channel(url)
-
+        name = get_channel_name(url)
         if name:
-            report += f"✅ {name}\n{url}\n\n"
+            report += f"{name}\nStatus: ✅ Alive\n\n"
         else:
-            report += f"🚨 ไม่พบช่อง\n{url}\n\n"
+            report += f"{url}\nStatus: 🚨 Not Found\n\n"
 
     await update.message.reply_text(report)
 
-# -----------------------------------
+
+# -----------------------------
+# เริ่มระบบ
+# -----------------------------
+async def on_startup(app):
+    await app.bot.send_message(chat_id=CHAT_ID, text="🤖 บอทเฝ้าช่องออนไลน์แล้ว")
+
+
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
     app.add_handler(
-        MessageHandler(filters.TEXT & filters.Regex("^status$", flags=re.IGNORECASE), status_command)
+        MessageHandler(
+            filters.TEXT & filters.Regex("(?i)^/?status$"),
+            status_command
+        )
     )
 
+    app.job_queue.run_repeating(check_channels, interval=300, first=10)
+
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
