@@ -4,7 +4,7 @@ from telegram import Bot
 
 # ====== ใส่ค่าใหม่ของคุณตรงนี้ ======
 TOKEN = "8538417344:AAELrbI2KX9JmhHi_EhgCxLXPfPqyl8E29Q"
-CHAT_ID = "-1003882788938"
+CHAT_ID = "1003882788938"
 API_KEY = "AIzaSyB6wTJ74st9Q-MGWYFpNATxZ3ghHbgokpM"
 
 CHANNEL_HANDLES = [
