@@ -1,116 +1,115 @@
+import os
 import requests
-import re
-from bs4 import BeautifulSoup
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
-# ====== ใส่ค่าของคุณ ======
-TOKEN = "8538417344:AAELrbI2KX9JmhHi_EhgCxLXPfPqyl8E29Q"
-CHAT_ID = -1003882788938
-# ===========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
-CHANNEL_URLS = [
-    "https://www.youtube.com/@JOJOCARTOON-p7p",
-    "https://www.youtube.com/@Rasingcartoon",
-    "https://www.youtube.com/@RonaldoNo1-j6j",
-    "https://www.youtube.com/@Iconiccartoon-y5i",
-    "https://www.youtube.com/@ilukpaaaa",
-    "https://www.youtube.com/@Fibzy%E0%B8%88%E0%B8%B0%E0%B9%82%E0%B8%9A%E0%B8%99%E0%B8%9A%E0%B8%B4%E0%B8%99",
-    "https://www.youtube.com/@XcghFs",
-    "https://www.youtube.com/@Rolando7k-z9d",
-    "https://www.youtube.com/@ttsundayxremix468",
-    "https://www.youtube.com/@%E0%B8%84%E0%B8%99%E0%B8%95%E0%B8%B7%E0%B9%88%E0%B8%99%E0%B8%9A%E0%B8%B21",
-    "https://www.youtube.com/@LyricsxThailand7"
-]
-
-channel_status = {}
-
-# -----------------------------
-# ดึงชื่อช่องจากหน้าเว็บ
-# -----------------------------
-def get_channel_name(url):
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-
-        if res.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        meta = soup.find("meta", property="og:title")
-        if meta:
-            return meta["content"]
-
-        return None
-
-    except:
-        return None
+CHANNELS = {
+    "JOJOCARTOON": "JOJOCARTOON-p7p",
+    "Rasingcartoon": "Rasingcartoon",
+    "RonaldoNo1": "RonaldoNo1-j6j",
+    "Iconiccartoon": "Iconiccartoon-y5i",
+    "ilukpaaaa": "ilukpaaaa",
+    "Fibzy": "Fibzyจะโบนบิน",
+    "XcghFs": "XcghFs",
+    "Rolando7k": "Rolando7k-z9d",
+    "ttsundayxremix": "ttsundayxremix468",
+    "คนตื่นบ้า": "คนตื่นบ้า1",
+    "LyricsxThailand": "LyricsxThailand7"
+}
 
 
-# -----------------------------
-# เช็คทุกช่อง
-# -----------------------------
-async def check_channels(context: ContextTypes.DEFAULT_TYPE):
-    global channel_status
+# =========================
+# 🔍 Helper Functions
+# =========================
 
-    for url in CHANNEL_URLS:
-        name = get_channel_name(url)
-        status = "alive" if name else "dead"
-
-        if url not in channel_status:
-            channel_status[url] = status
-            continue
-
-        if status != channel_status[url]:
-            if status == "alive":
-                message = f"✅ {name} กลับมาแล้ว"
-            else:
-                message = f"🚨 {url} เข้าไม่ได้แล้ว"
-
-            await context.bot.send_message(chat_id=CHAT_ID, text=message)
-            channel_status[url] = status
+def get_channel_id_from_handle(handle):
+    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={handle}&key={YOUTUBE_API_KEY}"
+    r = requests.get(url).json()
+    return r["items"][0]["snippet"]["channelId"]
 
 
-# -----------------------------
-# คำสั่ง status
-# -----------------------------
+def get_channel_info(channel_id):
+    url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&id={channel_id}&key={YOUTUBE_API_KEY}"
+    r = requests.get(url).json()
+    return r["items"][0]
+
+
+def get_latest_videos(playlist_id):
+    url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=2&playlistId={playlist_id}&key={YOUTUBE_API_KEY}"
+    r = requests.get(url).json()
+    return r["items"]
+
+
+def get_video_stats(video_ids):
+    ids = ",".join(video_ids)
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics&id={ids}&key={YOUTUBE_API_KEY}"
+    r = requests.get(url).json()
+    return {item["id"]: item["statistics"] for item in r["items"]}
+
+
+# =========================
+# 📩 Telegram Command
+# =========================
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != CHAT_ID:
-        return
+    message = "📊 YouTube Channel Report\n"
 
-    report = "📊 รายงานสถานะช่อง\n\n"
+    for name, handle in CHANNELS.items():
+        try:
+            channel_id = get_channel_id_from_handle(handle)
+            channel_data = get_channel_info(channel_id)
 
-    for url in CHANNEL_URLS:
-        name = get_channel_name(url)
-        if name:
-            report += f"{name}\nStatus: ✅ Alive\n\n"
-        else:
-            report += f"{url}\nStatus: 🚨 Not Found\n\n"
+            title = channel_data["snippet"]["title"]
+            subs = channel_data["statistics"].get("subscriberCount", "0")
+            total_videos = channel_data["statistics"].get("videoCount", "0")
 
-    await update.message.reply_text(report)
+            uploads_playlist = channel_data["contentDetails"]["relatedPlaylists"]["uploads"]
+            latest_videos = get_latest_videos(uploads_playlist)
+
+            video_ids = [v["snippet"]["resourceId"]["videoId"] for v in latest_videos]
+            stats_map = get_video_stats(video_ids)
+
+            message += f"\n\n📺 {title}"
+            message += f"\n👥 Subscribers: {subs}"
+            message += f"\n🎬 Total Videos: {total_videos}\n"
+
+            for v in latest_videos:
+                vid = v["snippet"]["resourceId"]["videoId"]
+                video_title = v["snippet"]["title"]
+                published = v["snippet"]["publishedAt"]
+                stats = stats_map.get(vid, {})
+
+                message += (
+                    f"\n🎥 {video_title}"
+                    f"\n🕒 {published}"
+                    f"\n👁 {stats.get('viewCount', '0')}"
+                    f"\n👍 {stats.get('likeCount', '0')}"
+                    f"\n💬 {stats.get('commentCount', '0')}\n"
+                )
+
+        except Exception as e:
+            message += f"\n❌ {name} error: {str(e)}\n"
+
+    await update.message.reply_text(message[:4000])
 
 
-# -----------------------------
-# เริ่มระบบ
-# -----------------------------
-async def on_startup(app):
-    await app.bot.send_message(chat_id=CHAT_ID, text="🤖 บอทเฝ้าช่องออนไลน์แล้ว")
-
+# =========================
+# 🚀 Main
+# =========================
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(
         MessageHandler(
-            filters.TEXT & filters.Regex("(?i)^/?status$"),
+            filters.TEXT & filters.Regex("(?i)^status$"),
             status_command
         )
     )
-
-    app.job_queue.run_repeating(check_channels, interval=300, first=10)
 
     app.run_polling()
 
